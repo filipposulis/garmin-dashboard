@@ -1,0 +1,22 @@
+[theme]
+base = "dark"
+primaryColor = "#7DD3FC"
+backgroundColor = "#070D24"
+secondaryBackgroundColor = "#101A3C"
+textColor = "#E6ECFF"
+font = "Manrope:https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500;600;700&display=swap"
+headingFont = "Cormorant Garamond:https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&display=swap"
+metricValueFontWeight = 600
+chartCategoricalColors = ["#7DD3FC", "#A78BFA", "#5EEAD4", "#F9A8D4", "#FCD34D", "#FCA5A5"]
+
+[theme.sidebar]
+backgroundColor = "#0A1330"
+
+[server]
+# solo da questo computer: nessun altro sulla stessa rete wifi può aprire la dashboard
+address = "localhost"
+# niente domanda "Email:" nel terminale al primo avvio
+showEmailPrompt = false
+
+[browser]
+gatherUsageStats = false

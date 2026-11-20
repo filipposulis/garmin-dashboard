@@ -1,0 +1,7 @@
+# mai su GitHub: dati personali, ambienti, pacchetti
+.venv/
+data/
+__pycache__/
+*.zip
+.DS_Store
+Garmin Dashboard/

@@ -1,0 +1,33 @@
+GARMIN DASHBOARD
+================
+
+COME SI AVVIA
+1. Fai doppio clic su "Avvia Dashboard".
+
+   La prima volta il Mac potrebbe dire che non può aprirlo perché
+   "lo sviluppatore non è identificato". In quel caso:
+     - clic DESTRO su "Avvia Dashboard" → Apri → Apri
+   oppure:
+     - Impostazioni di Sistema → Privacy e sicurezza → in fondo "Apri comunque"
+   Serve solo la prima volta.
+
+2. Si apre una finestra nera (il Terminale): lasciala aperta.
+   La prima volta scarica tutto il necessario: ci vogliono un paio di minuti.
+   Dalla volta dopo parte in pochi secondi.
+
+3. Si apre il browser con la dashboard. Accedi con email e password di
+   Garmin Connect (se hai la verifica in due passaggi, ti chiederà il codice).
+
+   La password non viene salvata da nessuna parte: serve solo per il primo
+   accesso. Dopo, il Mac ricorda l'accesso per circa un anno.
+
+COME SI CHIUDE
+Chiudi la finestra del Terminale.
+
+LA PRIMA VOLTA È LENTA?
+Al primo accesso scarica fino a un anno di dati da Garmin e analizza ogni corsa:
+può volerci qualche minuto. Poi è tutto salvato e va veloce.
+
+PRIVACY
+- I tuoi dati restano sul tuo Mac (cartella "data" qui dentro).
+- Il pulsante "Esci" nel menu a sinistra scollega l'account e cancella i dati salvati.
