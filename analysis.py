@@ -316,7 +316,10 @@ HR_LAG_S = 30         # la FC risponde allo sforzo con ~30 s di ritardo
 MIN_SPEED = 1.9       # m/s (~8:45/km): sotto è camminata
 MAX_CV = 0.06         # variazione max del ritmo nel tratto
 MAX_HR_RANGE = 10     # bpm: la FC deve essersi assestata
-PROFILE_VERSION = 1
+PROFILE_VERSION = 2  # 2: aggiunte le dinamiche di corsa
+
+# dinamiche di corsa salvate per ogni tratto stabile, in quest'ordine dopo FC e velocità
+DYN = ["cad", "stride", "gct", "gcb", "vo", "vr"]
 
 
 def stream_grid(stream: pd.DataFrame) -> pd.DataFrame:
@@ -330,13 +333,17 @@ def stream_grid(stream: pd.DataFrame) -> pd.DataFrame:
     gap = s["gap"] if "gap" in s else pd.Series(np.nan, index=s.index)
     spd = s["speed"] if "speed" in s else pd.Series(np.nan, index=s.index)
     sp = gap.where(gap > 0).fillna(spd)
-    return pd.DataFrame({"hr": s["hr"].interpolate(limit=5), "sp": sp.interpolate(limit=3)})
+    out = pd.DataFrame({"hr": s["hr"].interpolate(limit=5), "sp": sp.interpolate(limit=3)})
+    for c in DYN:
+        if c in s:
+            out[c] = s[c].where(s[c] > 0).interpolate(limit=5)  # 0 = fermo / dato mancante
+    return out
 
 
 def steady_windows(g: pd.DataFrame) -> pd.DataFrame:
     """Tratti di 2 minuti con ritmo costante e FC stabile → (inizio, FC media, velocità media)."""
     if len(g) < WARMUP_S + WIN_S + HR_LAG_S:
-        return pd.DataFrame(columns=["t", "hr", "sp"])
+        return pd.DataFrame(columns=["t", "hr", "sp", *DYN])
     sp10 = g["sp"].rolling(10, center=True, min_periods=6).mean()  # toglie il rumore del GPS
     hr = g["hr"]
     out = []
@@ -348,8 +355,9 @@ def steady_windows(g: pd.DataFrame) -> pd.DataFrame:
         m = sp.mean()
         if m < MIN_SPEED or sp.std() / m > MAX_CV or h.max() - h.min() > MAX_HR_RANGE:
             continue
-        out.append((t0, float(h.mean()), float(m)))
-    return pd.DataFrame(out, columns=["t", "hr", "sp"])
+        dyn = [g[c].loc[t0:t0 + WIN_S - 1].mean() if c in g else np.nan for c in DYN]
+        out.append((t0, float(h.mean()), float(m), *[float(x) for x in dyn]))
+    return pd.DataFrame(out, columns=["t", "hr", "sp", *DYN])
 
 
 def decoupling(g: pd.DataFrame, min_minutes: float = 50, max_cv: float = 0.12) -> dict | None:
@@ -369,7 +377,14 @@ def decoupling(g: pd.DataFrame, min_minutes: float = 50, max_cv: float = 0.12) -
     return {"pct": float((ef1 - ef2) / ef1 * 100), "cv": cv, "steady": cv <= max_cv,
             "hr1": float(a["hr"].mean()), "hr2": float(b["hr"].mean()),
             "pace1": float(1000 / a["sp"].mean()), "pace2": float(1000 / b["sp"].mean()),
-            "minutes": len(g) / 60}
+            "minutes": len(g) / 60,
+            # come cambia la tecnica nella seconda metà (cedimento della forma)
+            "form1": {c: _num(a[c].mean()) for c in DYN if c in a},
+            "form2": {c: _num(b[c].mean()) for c in DYN if c in b}}
+
+
+def _num(x):
+    return None if x is None or pd.isna(x) else float(x)
 
 
 def decoupling_valid(d: dict | None, min_minutes: float = 60) -> bool:
@@ -384,11 +399,12 @@ def run_profile(stream: pd.DataFrame, weather: dict) -> dict:
     """Riassunto compatto di una corsa (finisce nella cache su disco)."""
     g = stream_grid(stream)
     has_gap = "gap" in stream and stream["gap"].notna().any()
-    w = steady_windows(g) if has_gap else pd.DataFrame(columns=["t", "hr", "sp"])
+    w = steady_windows(g) if has_gap else pd.DataFrame(columns=["t", "hr", "sp", *DYN])
     return {
         "v": PROFILE_VERSION,
         "gps": bool(has_gap),  # senza GPS la velocità è stimata dal polso: inaffidabile
-        "windows": w[["hr", "sp"]].round(3).values.tolist(),
+        # [FC, velocità, cadenza, falcata, contatto, bilanciamento, oscillazione, rapporto verticale]
+        "windows": [[_num(round(x, 3)) for x in row] for row in w[["hr", "sp", *DYN]].values.tolist()],
         "decoupling": decoupling(g) if has_gap else None,
         **weather,
     }
@@ -410,7 +426,8 @@ def efficiency_model(runs: pd.DataFrame, profiles: dict, ref_hr: float, band: fl
         p = profiles.get(r["id"])
         if not p or not p.get("gps"):
             continue
-        for hr, sp in p["windows"]:
+        for win in p["windows"]:
+            hr, sp = win[0], win[1]
             rows.append((r["id"], r["start"], r["name"], hr, sp, p.get("temp_c"), p.get("dew_point_c")))
     W = pd.DataFrame(rows, columns=["id", "date", "name", "hr", "sp", "temp", "dew"])
     n_no_gps = sum(1 for i in runs["id"] if i in profiles and not profiles[i].get("gps"))
@@ -465,6 +482,74 @@ def efficiency_trend(per: pd.DataFrame, windows=(180, 90, 0), span: int = 42) ->
             out.append({"days_ago": back, "pace": float(w["pace_adj"].median()),
                         "pace_raw": float(w["pace_raw"].median()), "n": len(w)})
     return out
+
+
+# =====================================================================
+# 4b. TECNICA DI CORSA (dinamiche)
+# =====================================================================
+# metrica: (nome, unità, decimali, +1 se aumentare è meglio / -1 se è meglio diminuire / 0 neutro)
+DYN_INFO = {
+    "cad": ("Cadenza", "passi/min", 0, +1),
+    "stride": ("Lunghezza del passo", "cm", 0, 0),
+    "gct": ("Tempo di contatto", "ms", 0, -1),
+    "vo": ("Oscillazione verticale", "cm", 1, -1),
+    "vr": ("Rapporto verticale", "%", 1, -1),
+    "gcb": ("Bilanciamento (sinistra)", "%", 1, 0),
+}
+
+
+def dynamics_model(runs: pd.DataFrame, profiles: dict, ref_speed: float, band: float = 0.08) -> pd.DataFrame:
+    """Valore di ogni dinamica a una velocità di riferimento, corsa per corsa.
+
+    Cadenza, passo, contatto e oscillazione cambiano soprattutto con la velocità: confronto solo
+    tratti stabili entro ±8% dal passo di riferimento, riportati esattamente a quel passo.
+    Il bilanciamento dipende poco dalla velocità: lì uso tutti i tratti stabili della corsa."""
+    rows = []
+    for _, r in runs.iterrows():
+        p = profiles.get(r["id"])
+        if not p or not p.get("gps"):
+            continue
+        for w in p["windows"]:
+            if len(w) < 2 + len(DYN):
+                continue
+            rows.append((r["id"], r["start"], r["name"], w[1], *w[2:2 + len(DYN)]))
+    W = pd.DataFrame(rows, columns=["id", "date", "name", "sp", *DYN]).astype({c: float for c in ["sp", *DYN]})
+    if W.empty:
+        return pd.DataFrame()
+
+    near = W[(W["sp"] / ref_speed - 1).abs() <= band].copy()
+    out = {}
+    for c in ["cad", "stride", "gct", "vo", "vr"]:
+        d = near.dropna(subset=[c])
+        if len(d) < 20:
+            continue
+        slope = np.polyfit(d["sp"], d[c], 1)[0]   # quanto cambia la metrica con la velocità
+        d = d.assign(adj=d[c] + slope * (ref_speed - d["sp"]))
+        g = d.groupby("id")["adj"].agg(["median", "size"])
+        out[c] = g.loc[g["size"] >= 4, "median"]
+    bal = W.dropna(subset=["gcb"]).groupby("id")["gcb"].agg(["median", "size"])
+    out["gcb"] = bal.loc[bal["size"] >= 4, "median"]
+
+    per = pd.DataFrame(out)
+    if per.empty:
+        return per
+    info = W.groupby("id").agg(date=("date", "first"), name=("name", "first"))
+    return info.join(per, how="inner").sort_values("date")
+
+
+def dynamics_trend(per: pd.DataFrame, windows=(180, 90, 0), span: int = 42) -> list[dict]:
+    """Mediana di ogni dinamica nelle 6 settimane che terminano N giorni fa."""
+    if per.empty:
+        return []
+    last = per["date"].max().normalize()
+    res = []
+    for back in windows:
+        end = last - pd.Timedelta(days=back)
+        w = per[(per["date"] > end - pd.Timedelta(days=span)) & (per["date"] <= end + pd.Timedelta(days=1))]
+        vals = {c: float(w[c].median()) for c in DYN_INFO if c in w and w[c].notna().sum() >= 3}
+        if vals:
+            res.append({"days_ago": back, "n": len(w), **vals})
+    return res
 
 
 # =====================================================================

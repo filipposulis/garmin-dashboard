@@ -258,7 +258,7 @@ def page_efficiency():
         return
     profiles = run_profiles(tuple(runs["id"]))
 
-    all_hr = [hr for p in profiles.values() if p.get("gps") for hr, _ in p["windows"]]
+    all_hr = [w[0] for p in profiles.values() if p.get("gps") for w in p["windows"]]
     aerobic = [h for h in all_hr if 140 <= h <= 175]
     default = int(5 * round(np.median(aerobic) / 5)) if aerobic else 155
     ref = st.slider("Frequenza cardiaca di riferimento", 130, 185, default, step=1,
@@ -398,6 +398,168 @@ def page_efficiency():
             f"e lo tolgo.\n"
             f"5. Ogni punto del grafico è la mediana dei tratti di una corsa; la linea è la mediana mobile su "
             f"6 settimane.")
+
+
+# =====================================================================
+# 4b. TECNICA DI CORSA
+# =====================================================================
+def _mmss(sec):
+    return f"{int(sec // 60)}:{int(sec % 60):02d}"
+
+
+def page_technique():
+    st.title("Tecnica di corsa")
+    st.caption("Cadenza, contatto col suolo e oscillazione cambiano soprattutto con la velocità: per vedere se la "
+               "tecnica migliora davvero li confronto **allo stesso passo**, solo sui tratti a ritmo costante.")
+
+    acts = activities_long()
+    runs = acts[acts["type"].isin(A.RUN_TYPES)] if not acts.empty else acts
+    if runs.empty:
+        st.info("Nessuna corsa trovata.")
+        return
+    profiles = run_profiles(tuple(runs["id"]))
+    speeds = [w[1] for p in profiles.values() if p.get("gps") for w in p["windows"]
+              if len(w) > 2 and w[2] is not None]
+    if len(speeds) < 50:
+        st.info("Nessun dato di dinamica di corsa: servono un orologio o una fascia che misurino "
+                "cadenza, tempo di contatto e oscillazione.")
+        return
+
+    options = list(range(4 * 60 + 30, 8 * 60 + 1, 5))
+    typical = 5 * round(1000 / np.median(speeds) / 5)
+    ref_pace = st.select_slider("Passo di riferimento", options=options, format_func=lambda x: f"{_mmss(x)}/km",
+                                value=min(options, key=lambda x: abs(x - typical)),
+                                help="Di default il tuo passo tipico. Prova anche il tuo ritmo gara.")
+    per = A.dynamics_model(runs, profiles, 1000 / ref_pace)
+    trend = A.dynamics_trend(per)
+    if per.empty or not trend:
+        st.info(f"Pochi tratti stabili intorno a {_mmss(ref_pace)}/km: prova un passo più vicino a quello "
+                "delle tue corse abituali.")
+        return
+
+    now, past = trend[-1], (trend[0] if len(trend) > 1 else None)
+    names = {180: "6 mesi fa", 90: "3 mesi fa"}
+
+    # --- numeri ---
+    st.markdown(f'<div class="g-eyebrow" style="margin-top:6px">A {_mmss(ref_pace)}/km · ultime 6 settimane'
+                + (f' · confronto con {names[past["days_ago"]]}' if past else "") + "</div>",
+                unsafe_allow_html=True)
+    keys = [c for c in ["cad", "gct", "vo", "vr", "stride", "gcb"] if c in now]
+    cols = st.columns(len(keys))
+    better, worse = [], []
+    for col, c in zip(cols, keys):
+        label, unit, dec, good = A.DYN_INFO[c]
+        value = now[c]
+        delta = None
+        if past and c in past:
+            diff = value - past[c]
+            delta = f"{diff:+.{dec}f} {unit}"
+            threshold = {"cad": 1.5, "gct": 4, "vo": 0.3, "vr": 0.3}.get(c)
+            if good and threshold and abs(diff) >= threshold:
+                (better if diff * good > 0 else worse).append(f"{label.lower()} {diff:+.{dec}f} {unit}")
+        if c == "gcb":
+            col.metric("Bilanciamento", f"{value:.1f} / {100 - value:.1f}", delta=delta, delta_color="off",
+                       help="Percentuale del tempo di contatto sul piede sinistro / destro. 50/50 = simmetrico.")
+        else:
+            col.metric(label, f"{value:.{dec}f} {unit}", delta=delta,
+                       delta_color={1: "normal", -1: "inverse", 0: "off"}[good])
+
+    if past:
+        when = names[past["days_ago"]]
+        if better and not worse:
+            head, tone = f"Tecnica più efficiente rispetto a {when}", "good"
+        elif worse and not better:
+            head, tone = f"Tecnica un po' meno efficiente rispetto a {when}", "warn"
+        elif better and worse:
+            head, tone = f"Tecnica in evoluzione rispetto a {when}", "neutral"
+        else:
+            head, tone = f"Tecnica stabile rispetto a {when}", "neutral"
+        parts = ([f"migliorati: {', '.join(better)}"] if better else []) + \
+                ([f"peggiorati: {', '.join(worse)}"] if worse else [])
+        sub = ("; ".join(parts).capitalize() + ". " if parts else "") + \
+            "Tutto misurato allo stesso passo, quindi non dipende da quanto veloce hai corso."
+        gcb = now.get("gcb")
+        if gcb is not None and abs(gcb - 50) > 1:
+            sub += (f" Il bilanciamento ({gcb:.1f}/{100 - gcb:.1f}) è un po' sbilanciato: se dura nel tempo può "
+                    "indicare un fastidio o una compensazione.")
+        card(f'<div class="g-big">{head}</div><div class="g-small">{sub}</div>', tone)
+
+    # --- grafici nel tempo ---
+    plot = [c for c in ["cad", "gct", "vo", "vr"] if c in per and per[c].notna().sum() >= 3]
+    grid = st.columns(2)
+    for k, c in enumerate(plot):
+        label, unit, dec, good = A.DYN_INFO[c]
+        d = per[["date", "name", c]].dropna()
+        trend_line = d.set_index("date")[c].rolling("42D", min_periods=3).median().values
+        fig = go.Figure()
+        fig.add_scatter(x=d["date"], y=d[c], mode="markers", name="Corsa", marker=dict(size=7, color="#A78BFA",
+                        opacity=0.55), customdata=d[["name"]].values,
+                        hovertemplate="%{customdata[0]}<br>%{y:." + str(dec) + "f} " + unit + "<extra></extra>")
+        fig.add_scatter(x=d["date"], y=trend_line, mode="lines", name="Tendenza", line=dict(color="#5EEAD4", width=3))
+        better_txt = {1: "più alto è meglio", -1: "più basso è meglio"}.get(good, "")
+        chart(fig, grid[k % 2], 260, title=f"{label} a {_mmss(ref_pace)}/km ({unit}) · {better_txt}", showlegend=False)
+
+    if "gcb" in per and per["gcb"].notna().sum() >= 3:
+        d = per[["date", "name", "gcb"]].dropna()
+        fig = go.Figure()
+        fig.add_hrect(y0=49, y1=51, fillcolor="rgba(94,234,212,0.08)", line_width=0)
+        fig.add_hline(y=50, line_dash="dot", line_color="rgba(255,255,255,0.3)")
+        fig.add_scatter(x=d["date"], y=d["gcb"], mode="lines+markers", line=dict(color="#7DD3FC", width=2),
+                        marker=dict(size=6), customdata=d[["name"]].values,
+                        hovertemplate="%{customdata[0]}<br>sinistra %{y:.1f}%<extra></extra>")
+        lim = max(2.5, float((d["gcb"] - 50).abs().max()) + 0.5)
+        chart(fig, height=240, title="Bilanciamento sinistra / destra (fascia verde = simmetrico)",
+              yaxis_range=[50 - lim, 50 + lim], showlegend=False, yaxis_title="% sinistra")
+
+    # --- tenuta della tecnica nei lunghi ---
+    st.subheader("La tecnica regge sulla distanza?")
+    st.caption("Sulle corse di almeno un'ora a ritmo costante: come cambiano contatto e cadenza nella seconda metà. "
+               "Se il contatto si allunga e la cadenza cala, la forma sta cedendo per la stanchezza.")
+    rows = []
+    for _, r in runs.iterrows():
+        d = (profiles.get(r["id"]) or {}).get("decoupling")
+        if not A.decoupling_valid(d) or not d.get("form1"):
+            continue
+        f1, f2 = d["form1"], d["form2"]
+        if f1.get("gct") and f2.get("gct"):
+            rows.append({"date": r["start"], "name": r["name"], "km": r["distance_km"],
+                         "d_gct": round(f2["gct"] - f1["gct"], 1) + 0.0,
+                         "d_cad": round((f2.get("cad") or 0) - (f1.get("cad") or 0), 1) + 0.0})
+    if not rows:
+        st.info("Nessuna corsa lunga a ritmo costante con le dinamiche di corsa.")
+    else:
+        lr = pd.DataFrame(rows).sort_values("date")
+        last = lr.iloc[-1]
+        ok = last["d_gct"] < 5 and last["d_cad"] > -2
+        card(f'<div class="g-eyebrow">Ultimo lungo · {last["date"]:%d/%m} · {last["km"]:.1f} km</div>'
+             f'<div class="g-big">Seconda metà: contatto {last["d_gct"]:+.0f} ms, cadenza {last["d_cad"]:+.1f} '
+             f'passi/min</div><div class="g-small">'
+             + ("La tecnica regge fino alla fine." if ok else
+                "Nel finale la tecnica cede un po': lavori di forza e tecnica (andature, salite brevi) aiutano.")
+             + "</div>", "good" if ok else "warn")
+        fig = go.Figure()
+        fig.add_bar(x=lr["date"], y=lr["d_gct"], name="Contatto (ms)",
+                    marker_color=["#5EEAD4" if v < 5 else "#FCD34D" if v < 10 else "#FCA5A5" for v in lr["d_gct"]],
+                    customdata=np.stack([lr["name"], lr["km"], lr["d_cad"]], axis=1),
+                    hovertemplate="%{customdata[0]} · %{customdata[1]:.1f} km<br>contatto %{y:+.0f} ms<br>"
+                                  "cadenza %{customdata[2]:+.1f}<extra></extra>")
+        fig.add_hline(y=0, line_color="rgba(255,255,255,0.3)")
+        chart(fig, height=260, title="Variazione del tempo di contatto nella seconda metà (ms)", showlegend=False)
+
+    with st.expander("Cosa significano queste metriche"):
+        st.markdown(
+            "- **Cadenza**: passi al minuto. A parità di passo, una cadenza un po' più alta di solito vuol dire "
+            "passi più corti e meno impatto.\n"
+            "- **Tempo di contatto**: quanto resta il piede a terra a ogni passo. Più breve = più reattivo.\n"
+            "- **Oscillazione verticale**: quanto \"rimbalzi\" in alto a ogni passo. Meno energia spesa in "
+            "verticale = più va in avanti.\n"
+            "- **Rapporto verticale**: oscillazione divisa per lunghezza del passo. È il riassunto dell'economia: "
+            "più basso è meglio.\n"
+            "- **Lunghezza del passo**: a parità di passo è l'inverso della cadenza, quindi non la giudico da sola.\n"
+            "- **Bilanciamento**: quanto del tempo di contatto è sul piede sinistro. Sopra 51% o sotto 49% in modo "
+            "costante può indicare un'asimmetria.\n\n"
+            "Il metodo è lo stesso dell'efficienza aerobica: tratti di 2 minuti a ritmo costante, solo quelli "
+            "entro ±8% dal passo scelto, riportati esattamente a quel passo.")
 
 
 # =====================================================================

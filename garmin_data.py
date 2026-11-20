@@ -357,7 +357,11 @@ def save_settings(settings: dict) -> None:
 
 # ---------- dati secondo per secondo di una corsa ----------
 _STREAM_KEYS = {"directHeartRate": "hr", "directSpeed": "speed", "directGradeAdjustedSpeed": "gap",
-                "sumDuration": "t", "sumMovingDuration": "t_moving", "sumDistance": "dist"}
+                "sumDuration": "t", "sumMovingDuration": "t_moving", "sumDistance": "dist",
+                # dinamiche di corsa (orologio o fascia compatibile)
+                "directDoubleCadence": "cad", "directStrideLength": "stride", "directGroundContactTime": "gct",
+                "directGroundContactBalanceLeft": "gcb", "directVerticalOscillation": "vo",
+                "directVerticalRatio": "vr"}
 
 
 def load_activity_stream(garmin: Garmin, activity_id) -> pd.DataFrame:
