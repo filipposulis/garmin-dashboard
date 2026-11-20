@@ -12,7 +12,7 @@ Dashboard personale per i dati di Garmin Connect, con analisi che Garmin non fa:
 ## Uso (Mac)
 
 1. Scarica lo zip (*Code → Download ZIP*) ed estrailo.
-2. Doppio clic su **Avvia Dashboard** (la prima volta: Impostazioni di Sistema → Privacy e sicurezza → *Apri comunque*).
+2. Doppio clic su **Avvia Dashboard** (la prima volta il Mac lo blocca: Impostazioni di Sistema → Privacy e sicurezza → in fondo *Apri comunque*).
 3. Accedi con il tuo account Garmin Connect.
 
 La password non viene salvata; i dati restano sul tuo computer. Gli aggiornamenti arrivano da soli a ogni avvio.

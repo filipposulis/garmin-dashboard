@@ -19,7 +19,10 @@ main() {
         export PATH="$HOME/.local/bin:$PATH"
     fi
 
-    if [ ! -x ".venv/bin/streamlit" ] || [ requirements.txt -nt .venv/.installed ]; then
+    # l'ambiente va (ri)creato se manca, se le librerie sono cambiate, o se non funziona più
+    # (succede ad esempio se la cartella è stata spostata dopo il primo avvio)
+    if ! .venv/bin/python -c "import streamlit, garminconnect" >/dev/null 2>&1 ||
+        [ requirements.txt -nt .venv/.installed ]; then
         echo "Preparo l'ambiente (solo la prima volta o dopo un aggiornamento)…"
         uv venv --python 3.12 --quiet --clear .venv &&
             uv pip install --python .venv --quiet -r requirements.txt &&
@@ -27,7 +30,8 @@ main() {
     fi
 
     echo "Avvio… si aprirà il browser. Per chiudere la dashboard chiudi questa finestra."
-    .venv/bin/streamlit run dashboard.py
+    # "python -m" invece dello script .venv/bin/streamlit: funziona anche se la cartella viene spostata
+    .venv/bin/python -m streamlit run dashboard.py
 }
 
 update() {

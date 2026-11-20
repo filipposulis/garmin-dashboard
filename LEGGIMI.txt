@@ -4,11 +4,13 @@ GARMIN DASHBOARD
 COME SI AVVIA
 1. Fai doppio clic su "Avvia Dashboard".
 
-   La prima volta il Mac potrebbe dire che non può aprirlo perché
-   "lo sviluppatore non è identificato". In quel caso:
-     - clic DESTRO su "Avvia Dashboard" → Apri → Apri
-   oppure:
-     - Impostazioni di Sistema → Privacy e sicurezza → in fondo "Apri comunque"
+   La prima volta il Mac dice che non può aprirlo ("sviluppatore non
+   identificato" o simile). È normale. Fai così:
+     1. Clicca "Fine" (NON "Sposta nel Cestino").
+     2. Apri Impostazioni di Sistema → Privacy e sicurezza.
+     3. Scorri in fondo: c'è scritto che "Avvia Dashboard" è stato bloccato,
+        con il pulsante "Apri comunque". Cliccalo.
+     4. Metti la password del Mac (o Touch ID) e conferma "Apri".
    Serve solo la prima volta.
 
 2. Si apre una finestra nera (il Terminale): lasciala aperta.
@@ -20,6 +22,8 @@ COME SI AVVIA
 
    La password non viene salvata da nessuna parte: serve solo per il primo
    accesso. Dopo, il Mac ricorda l'accesso per circa un anno.
+
+PUOI SPOSTARE LA CARTELLA DOVE VUOI (Scrivania, Documenti…): funziona lo stesso.
 
 COME SI CHIUDE
 Chiudi la finestra del Terminale.
