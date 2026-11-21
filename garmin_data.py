@@ -220,6 +220,7 @@ def load_activities_df(garmin: Garmin, start: date, end: date) -> pd.DataFrame:
             "elev_gain_m": a.get("elevationGain"),
             "training_load": a.get("activityTrainingLoad"),
             "aerobic_te": a.get("aerobicTrainingEffect"),
+            "anaerobic_te": a.get("anaerobicTrainingEffect"),
             "te_label": a.get("trainingEffectLabel"),
         })
     df = pd.DataFrame(rows)

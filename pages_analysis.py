@@ -1,4 +1,4 @@
-"""Le 6 pagine di analisi: quello che Garmin Connect non ti dice."""
+"""Le pagine di analisi: quello che Garmin Connect non ti dice."""
 from datetime import date, timedelta
 
 import numpy as np
@@ -790,3 +790,242 @@ def page_calendar():
                 card(f'<div class="g-eyebrow">{row["label"]}</div><div class="g-hero">{_fmt_record(row)}</div>'
                      f'<div class="g-small">{when}{where}</div>' + (pill("nuovo!", "good") if recent else ""),
                      "good" if recent else "neutral")
+
+
+# =====================================================================
+# 7. ALTRI SPORT
+# =====================================================================
+TE_NAMES = {"RECOVERY": "Recupero", "AEROBIC_BASE": "Base aerobica", "TEMPO": "Tempo", "LACTATE_THRESHOLD": "Soglia",
+            "VO2MAX": "VO2max", "ANAEROBIC_CAPACITY": "Capacità anaerobica", "SPEED": "Velocità"}
+KIND_ORDER = ["Riposo", "Corsa", *[f for f in A.SPORT_FAMILIES if f != "Corsa"], "Altro sport"]
+
+
+TYPE_NAMES = {"paddelball": "padel", "padel": "padel", "tennis": "tennis", "tennis_v2": "tennis", "soccer": "calcio",
+              "football": "calcio", "basketball": "basket", "volleyball": "pallavolo", "cycling": "bici",
+              "road_biking": "bici da strada", "lap_swimming": "nuoto", "open_water_swimming": "nuoto"}
+
+
+def _sport_name(acts, family):
+    """'padel' se quasi tutte le sessioni della famiglia sono padel, altrimenti il nome della famiglia."""
+    t = acts.loc[acts["type"].map(A.sport_family) == family, "type"].map(lambda x: TYPE_NAMES.get(x, x))
+    if not t.empty and t.value_counts(normalize=True).iloc[0] >= 0.8:
+        return t.value_counts().index[0]
+    return family.lower()
+
+
+def _fmt_diff(v, unit, dec=0):
+    return f"{v:+.{dec}f} {unit}".replace("+-", "−").replace("-", "−")
+
+
+@st.cache_data(ttl=3600, show_spinner="Confronto i giorni di sport con quelli di corsa e di riposo…")
+def _recovery(daily, acts):
+    r = A.recovery_after(daily, acts)
+    comps = {}
+    for m in A.RECOVERY_METRICS:
+        if m not in r:
+            continue
+        for k in r["kind"].unique():
+            comps[(m, k, "Riposo")] = A.compare_groups(r[m], r["kind"] == k, r["kind"] == "Riposo")
+            comps[(m, k, "Corsa")] = A.compare_groups(r[m], r["kind"] == k, r["kind"] == "Corsa")
+            comps[(m, k, "Corsa serale")] = A.compare_groups(r[m], r["kind"] == k,
+                                                            (r["kind"] == "Corsa") & (r["end_h"] >= 18))
+    return r, comps
+
+
+def page_cross():
+    st.title("Altri sport")
+    st.caption("Padel, calcio, bici, nuoto…: che allenamento sono davvero, quanto ti costano in recupero "
+               "e cosa succede alla corsa dopo.")
+    daily, acts = daily_year(), activities_long()
+    if acts.empty:
+        st.info("Nessuna attività trovata.")
+        return
+    acts = acts[acts["start"] >= daily.index.min()] if not daily.empty else acts
+    prof = A.sport_profile(acts)
+    others = [f for f in prof.index if f != "Corsa"]
+    if not others:
+        st.info("Nell'ultimo anno ci sono solo corse: niente da confrontare.")
+        return
+    main = max(others, key=lambda f: prof.at[f, "n"])  # lo sport che fai più spesso dopo la corsa
+    name = _sport_name(acts, main)
+
+    # --- quanto pesano ---
+    s, e = year_window()
+    ctl = A.ctl_by_family(acts, s, e)
+    ctl_now = ctl.iloc[-1] if not ctl.empty else pd.Series(dtype=float)
+    other_ctl = float(ctl_now.drop(["Corsa", "Leggero"], errors="ignore").sum())
+    c = st.columns(4)
+    c[0].metric("Sessioni non di corsa", int(prof.loc[others, "n"].sum()),
+                help=f"Ultimo anno. Corse: {int(prof.at['Corsa', 'n']) if 'Corsa' in prof.index else 0}.")
+    c[1].metric("Ore non di corsa", f"{prof.loc[others, 'hours'].sum():.0f} h",
+                help=f"Corsa: {prof.at['Corsa', 'hours']:.0f} h" if "Corsa" in prof.index else None)
+    c[2].metric("Quota del carico Garmin", f"{prof.loc[others, 'load_share'].sum():.0f}%",
+                help="Percentuale del carico allenamento dell'anno che viene da sport diversi dalla corsa.")
+    if ctl_now.sum() > 0:
+        c[3].metric("Quota della forma attuale", f"{other_ctl / ctl_now.sum() * 100:.0f}%",
+                    help="Quanta parte della tua forma (CTL, pagina Carico e forma) viene oggi da altri sport.")
+
+    # --- che sforzo è ---
+    st.subheader("Che allenamento è, secondo Garmin")
+    table = prof.rename(columns={"n": "Sessioni", "hours": "Ore", "minutes": "Durata tipica (min)",
+                                 "avg_hr": "FC media", "load": "Carico tipico", "load_min": "Carico al minuto",
+                                 "aerobic_te": "Effetto aerobico", "anaerobic_te": "Effetto anaerobico",
+                                 "load_share": "% del carico"})
+    st.dataframe(table.round({"Ore": 1, "Durata tipica (min)": 0, "FC media": 0, "Carico tipico": 0,
+                              "Carico al minuto": 2, "Effetto aerobico": 1, "Effetto anaerobico": 1,
+                              "% del carico": 0}), width="stretch")
+    if "Corsa" in prof.index:
+        r_load, m_load = prof.at["Corsa", "load_min"], prof.at[main, "load_min"]
+        r_an, m_an = prof.at["Corsa", "anaerobic_te"], prof.at[main, "anaerobic_te"]
+        txt = (f"Un minuto di {name} vale per Garmin circa {m_load / r_load * 100:.0f}% di un minuto di corsa "
+               f"({m_load:.2f} contro {r_load:.2f} punti di carico), con la FC media a {prof.at[main, 'avg_hr']:.0f} "
+               f"bpm contro {prof.at['Corsa', 'avg_hr']:.0f}.")
+        if pd.notna(m_an) and pd.notna(r_an) and m_an > r_an + 0.4:
+            txt += (f" L'effetto anaerobico invece è più alto ({m_an:.1f} contro {r_an:.1f}): scatti, frenate e "
+                    "cambi di direzione, cioè quello che le corse facili non allenano.")
+        card(f'<div class="g-big">{txt}</div>', "neutral")
+
+    mix = A.te_mix(acts)
+    if not mix.empty:
+        mix = mix.rename(columns=TE_NAMES)
+        mix = mix[[c for c in TE_NAMES.values() if c in mix]]
+        long = mix.reset_index().melt(id_vars="family", var_name="Beneficio", value_name="%")
+        fig = px.bar(long, y="family", x="%", color="Beneficio", orientation="h",
+                     color_discrete_sequence=["#8C9AC4", "#7DD3FC", "#5EEAD4", "#FCD34D", "#FDBA74", "#FCA5A5",
+                                              "#A78BFA"])
+        chart(fig, height=80 + 45 * len(mix), title="Beneficio principale delle attività (stima Garmin)",
+              yaxis_title=None, xaxis_title="% delle attività", legend_title=None)
+
+    # --- recupero ---
+    st.subheader("Quanto ti costa recuperare")
+    r, comps = _recovery(daily, acts)
+    kinds = [k for k in KIND_ORDER if (r["kind"] == k).sum() >= 3]
+    metric = st.radio("Metrica del mattino dopo", list(A.RECOVERY_METRICS), horizontal=True,
+                      format_func=lambda m: A.RECOVERY_METRICS[m][0])
+    label, unit, higher_better = A.RECOVERY_METRICS[metric]
+    dec = 1 if unit == "bpm" else 0
+
+    vs_run = comps.get((metric, main, "Corsa"))
+    vs_rest = comps.get((metric, main, "Riposo"))
+    run_rest = comps.get((metric, "Corsa", "Riposo"))
+    if vs_rest and run_rest:
+        load_ratio = (prof.at[main, "load"] / prof.at["Corsa", "load"] * 100) if "Corsa" in prof.index else None
+        costs = A.evidence(vs_rest) != "non distinguibile dal caso" and (vs_rest["diff"] < 0) == higher_better
+        same = costs and vs_run and A.evidence(vs_run) == "non distinguibile dal caso"
+        head = (f"Dopo il {name}: {label} {_fmt_diff(vs_rest['a'], unit, dec)} rispetto al tuo normale; "
+                f"dopo una corsa {_fmt_diff(run_rest['a'], unit, dec)}, dopo un giorno di riposo "
+                f"{_fmt_diff(vs_rest['b'], unit, dec)}")
+        sub = ""
+        if same and load_ratio:
+            sub = (f"Il tuo corpo recupera dal {name} come da una corsa, anche se Garmin gli dà solo il "
+                   f"{load_ratio:.0f}% del carico di una corsa tipica. Nel pianificare la settimana conviene "
+                   f"contarlo come un allenamento vero, non come riposo attivo.")
+        elif A.evidence(vs_rest) == "non distinguibile dal caso":
+            sub = (f"Su questa metrica il {name} non lascia un segno distinguibile da un giorno di riposo.")
+        elif vs_run:
+            worse = (vs_run["diff"] < 0) == higher_better
+            sub = (f"Rispetto a una corsa recuperi {'peggio' if worse else 'meglio'} di "
+                   f"{abs(vs_run['diff']):.{dec}f} {unit} (confronto {A.evidence(vs_run)}).")
+        evening = comps.get((metric, main, "Corsa serale"))
+        if evening:
+            sub += (f" Il confronto più giusto è con le corse serali ({evening['n_b']}), perché anche l'orario "
+                    f"conta: lì la differenza è {_fmt_diff(evening['diff'], unit, dec)} ({A.evidence(evening)}).")
+        tone = "warn" if same else "neutral"
+        card(f'<div class="g-big">{head}</div><div class="g-small">{sub}</div>'
+             + pill(f"{vs_rest['n_a']} sessioni · {A.evidence(vs_rest)} rispetto al riposo", tone), tone)
+
+    rows = []
+    for k in kinds:
+        v = r.loc[r["kind"] == k, metric].dropna()
+        if len(v) >= 3:
+            rows.append({"kind": k, "mean": v.mean(), "se": v.std(ddof=1) / np.sqrt(len(v)), "n": len(v)})
+    if rows:
+        d = pd.DataFrame(rows)
+        good = (d["mean"] > 0) == higher_better
+        fig = go.Figure(go.Bar(
+            x=d["kind"], y=d["mean"], error_y=dict(type="data", array=d["se"], color="rgba(255,255,255,0.4)"),
+            marker_color=[A.FAMILY_COLOR.get(k, "#7DD3FC") for k in d["kind"]],
+            marker_line=dict(color=[TONE_COLOR["good"] if g else TONE_COLOR["bad"] for g in good], width=1.5),
+            customdata=d["n"], hovertemplate="%{x}<br>%{y:+.1f} " + unit + " · %{customdata} giorni<extra></extra>"))
+        fig.add_hline(y=0, line_color="rgba(255,255,255,0.35)")
+        chart(fig, height=340, title=f"{label} la mattina dopo, rispetto al tuo normale delle 4 settimane",
+              yaxis_title=unit, showlegend=False)
+        st.caption("La barretta sottile è l'incertezza (errore standard): se due barre si sovrappongono con le "
+                   "barrette, la differenza può essere solo caso. Gruppi con meno di 3 giorni non sono mostrati.")
+
+    # --- la corsa dopo ---
+    st.subheader("Come corri dopo un altro sport")
+    runs = acts[acts["type"].isin(A.RUN_TYPES)]
+    profiles = run_profiles(tuple(runs["id"])) if not runs.empty else {}
+    ref = A.default_ref_hr(profiles)
+    eff = A.efficiency_model(runs, profiles, ref)["runs"] if profiles else pd.DataFrame()
+    if eff.empty or len(eff) < 8:
+        st.info("Servono più corse con GPS e tratti stabili per questo confronto (vedi Efficienza aerobica).")
+    else:
+        hours = st.select_slider("Altro sport nelle … ore prima della corsa", [24, 48, 72], value=48)
+        per = A.runs_after_sport(eff, acts, hours)
+        res = A.compare_groups(per["resid"], per["after_sport"], ~per["after_sport"], min_n=3)
+        if res:
+            faster = res["diff"] < 0
+            ev = A.evidence(res)
+            head = (f"Nelle corse fatte entro {hours} ore da un altro sport, a {ref} bpm vai "
+                    f"{abs(res['diff']):.0f} s/km {'più veloce' if faster else 'più lento'} rispetto al tuo "
+                    f"periodo" if abs(res["diff"]) >= 3 else
+                    f"Entro {hours} ore da un altro sport corri come sempre, a parità di battiti")
+            sub = f"{res['n_a']} corse dopo un altro sport, {res['n_b']} senza. Confronto: {ev}."
+            if ev == "non distinguibile dal caso":
+                sub += " Con questi numeri non si può dire che l'altro sport ti aiuti o ti penalizzi."
+            elif faster:
+                sub += (" Una spiegazione plausibile: il giorno di altro sport sostituisce una corsa, quindi le gambe "
+                        "arrivano meno affaticate dall'impatto ripetuto della corsa, pur avendo fatto lavoro "
+                        "cardiovascolare. Ma è una correlazione, non una prova.")
+            else:
+                sub += " La fatica dell'altro sport sembra pesare sulla corsa: meglio non metterlo prima di un lavoro di qualità."
+            tone = "neutral" if ev == "non distinguibile dal caso" else ("good" if faster else "bad")
+            card(f'<div class="g-big">{head}</div><div class="g-small">{sub}</div>{pill(ev, tone)}', tone)
+
+            p = per.dropna(subset=["resid"]).copy()
+            p["gruppo"] = np.where(p["after_sport"], f"Entro {hours} h da un altro sport", "Senza altri sport prima")
+            fig = px.strip(p, x="gruppo", y="resid", color="gruppo", hover_data={"name": True, "sport_before": True,
+                                                                                 "gruppo": False},
+                           color_discrete_sequence=[TONE_COLOR["neutral"], A.FAMILY_COLOR[main]])
+            fig.update_traces(marker=dict(size=9, opacity=0.6), jitter=0.35)
+            for k, g in enumerate(p.groupby("gruppo", sort=False)["resid"]):
+                fig.add_shape(type="line", x0=k - 0.3, x1=k + 0.3, y0=g[1].mean(), y1=g[1].mean(),
+                              line=dict(color="#F1F5FF", width=3))
+            fig.update_yaxes(autorange="reversed")
+            chart(fig, height=360, showlegend=False, xaxis_title=None,
+                  yaxis_title=f"s/km rispetto al tuo periodo (in alto = meglio)",
+                  title=f"Efficienza di ogni corsa a {ref} bpm · la linea è la media")
+            st.caption(f"Per ogni corsa: passo a {ref} bpm al netto del caldo (come in Efficienza aerobica), meno la "
+                       "mediana delle 9 corse vicine nel tempo. Così si confronta ogni corsa con la tua forma di quel "
+                       "periodo, non con quella di sei mesi fa.")
+
+    # --- forma ---
+    if not ctl.empty and ctl.to_numpy().sum() > 0:
+        st.subheader("Quanta forma ti danno")
+        first = acts["start"].min().normalize()
+        cc = ctl[ctl.index >= first]
+        cols = [f for f in [*A.SPORT_FAMILIES, "Altro sport", "Leggero"] if f in cc and cc[f].max() > 0.5]
+        fig = go.Figure()
+        for f in cols:
+            fig.add_scatter(x=cc.index, y=cc[f], name=f, stackgroup="ctl", mode="lines", line=dict(width=0.5),
+                            fillcolor=A.FAMILY_COLOR.get(f), line_color=A.FAMILY_COLOR.get(f))
+        chart(fig, height=340, title="Forma (CTL) scomposta per sport", yaxis_title="CTL", legend_title=None)
+        st.caption("La somma delle fasce è la stessa Forma della pagina Carico e forma. Attenzione: la CTL misura il "
+                   "carico sul cuore. Il padel non allena l'economia di corsa né abitua tendini e ossa all'impatto "
+                   "della corsa, quindi questa forma \"in prestito\" vale meno per una gara.")
+
+    with st.expander("Come funziona e quanto fidarsi"):
+        st.markdown(
+            "- **Recupero**: per ogni giorno guardo HRV, FC a riposo, sleep score e Body Battery del mattino dopo, "
+            "come scostamento dalla tua mediana delle 4 settimane precedenti. Così l'estate o un periodo di forma non "
+            "vengono scambiati per l'effetto di uno sport. Se nello stesso giorno hai corso e fatto padel, il giorno "
+            "conta come padel.\n"
+            "- **Corsa dopo**: confronto l'efficienza aerobica (passo a parità di FC sui tratti stabili) delle corse "
+            "con e senza un altro sport nelle ore prima, sempre rispetto alla tua forma del periodo.\n"
+            "- **Affidabilità**: *chiaro* = p < 0.05 ed effetto almeno medio; *probabile* = p < 0.15; altrimenti la "
+            "differenza è compatibile con il caso. Con poche sessioni (es. 5 partite di calcio) prendi i numeri come "
+            "indicazioni, non come verdetti.\n"
+            "- ⚠️ Sono correlazioni: le serate di padel possono coincidere con cene tardi, birra o meno sonno, e "
+            "questo pesa sull'HRV quanto lo sport.")

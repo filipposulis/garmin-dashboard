@@ -6,6 +6,7 @@ Dashboard personale per i dati di Garmin Connect, con analisi che Garmin non fa:
 - **Allerte salute**: scostamenti dal tuo "normale" (FC a riposo, HRV, respirazione…)
 - **Carico e forma**: modello forma / fatica / freschezza (Banister)
 - **Efficienza aerobica**: passo a parità di FC sui soli tratti stabili, al netto del meteo, e disaccoppiamento aerobico
+- **Altri sport**: padel, calcio, bici… che allenamento sono, quanto costano in recupero e come corri dopo
 - **Gara obiettivo**: distanza dall'obiettivo, proiezione e quando iniziare lo scarico
 - **Calendario e record**
 

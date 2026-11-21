@@ -299,6 +299,7 @@ nav = st.navigation({
         st.Page(PA.page_load, title="Carico e forma", icon=":material/show_chart:", url_path="carico"),
         st.Page(PA.page_efficiency, title="Efficienza aerobica", icon=":material/speed:", url_path="efficienza"),
         st.Page(PA.page_technique, title="Tecnica di corsa", icon=":material/directions_run:", url_path="tecnica"),
+        st.Page(PA.page_cross, title="Altri sport", icon=":material/sports_tennis:", url_path="altri-sport"),
         st.Page(PA.page_race, title="Gara obiettivo", icon=":material/flag:", url_path="gara"),
         st.Page(PA.page_calendar, title="Calendario e record", icon=":material/calendar_month:",
                 url_path="calendario"),

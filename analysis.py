@@ -653,3 +653,176 @@ def calendar_grid(values: pd.Series, end: date, weeks: int = 53) -> pd.DataFrame
     df["week"] = (df["date"] - pd.to_timedelta(df["date"].dt.weekday, unit="D"))
     df["weekday"] = df["date"].dt.weekday
     return df
+
+
+# =====================================================================
+# 7. ALTRI SPORT (padel, calcio…) e il loro effetto sulla corsa
+# =====================================================================
+# famiglia: (tipi Garmin, colore). L'ordine è quello delle legende.
+SPORT_FAMILIES = {
+    "Corsa": RUN_TYPES | {"trail_running", "ultra_run"},
+    "Padel e racchetta": {"paddelball", "padel", "tennis", "tennis_v2", "squash", "badminton", "pickleball",
+                          "table_tennis", "racket_sports"},
+    "Calcio e squadra": {"soccer", "football", "basketball", "volleyball", "beach_volleyball", "rugby",
+                         "hockey", "american_football", "team_sports", "futsal", "handball"},
+    "Bici": {"cycling", "road_biking", "mountain_biking", "gravel_cycling", "indoor_cycling", "virtual_ride",
+             "e_bike_fitness"},
+    "Nuoto": {"lap_swimming", "open_water_swimming", "swimming"},
+}
+LIGHT_TYPES = {"walking", "mobility", "yoga", "breathwork", "other", "stretching", "pilates", "hiking"}
+FAMILY_COLOR = {"Corsa": "#7DD3FC", "Padel e racchetta": "#5EEAD4", "Calcio e squadra": "#A78BFA",
+                "Bici": "#FCD34D", "Nuoto": "#F9A8D4", "Altro sport": "#FDBA74", "Leggero": "#8C9AC4",
+                "Riposo": "#4B5A86"}
+
+
+def sport_family(activity_type: str) -> str:
+    for fam, types in SPORT_FAMILIES.items():
+        if activity_type in types:
+            return fam
+    return "Leggero" if activity_type in LIGHT_TYPES else "Altro sport"
+
+
+def with_family(acts: pd.DataFrame) -> pd.DataFrame:
+    a = acts.dropna(subset=["start"]).copy()
+    a["family"] = a["type"].map(sport_family)
+    a["day"] = a["start"].dt.normalize()
+    return a
+
+
+def sport_profile(acts: pd.DataFrame) -> pd.DataFrame:
+    """Una riga per famiglia di sport: quanto lo fai e che tipo di sforzo è (secondo Garmin)."""
+    a = with_family(acts)
+    a = a[a["family"] != "Leggero"]
+    if a.empty:
+        return pd.DataFrame()
+    a["load_min"] = a["training_load"] / a["duration_min"]
+    g = a.groupby("family")
+    out = pd.DataFrame({
+        "n": g.size(),
+        "hours": g["duration_min"].sum() / 60,
+        "minutes": g["duration_min"].median(),
+        "avg_hr": g["avg_hr"].mean(),
+        "load": g["training_load"].median(),
+        "load_min": g["load_min"].median(),
+        "aerobic_te": g["aerobic_te"].mean(),
+        "anaerobic_te": g["anaerobic_te"].mean() if "anaerobic_te" in a else np.nan,
+        "load_share": g["training_load"].sum() / a["training_load"].sum() * 100,
+    })
+    return out.sort_values("hours", ascending=False)
+
+
+def te_mix(acts: pd.DataFrame) -> pd.DataFrame:
+    """Quota di attività per beneficio principale di Garmin (base aerobica, soglia, velocità…), per famiglia."""
+    a = with_family(acts)
+    a = a[(a["family"] != "Leggero") & a["te_label"].notna() & (a["te_label"] != "UNKNOWN")]
+    if a.empty:
+        return pd.DataFrame()
+    return pd.crosstab(a["family"], a["te_label"], normalize="index") * 100
+
+
+def day_kinds(daily_index: pd.DatetimeIndex, acts: pd.DataFrame) -> pd.Series:
+    """Cosa hai fatto ogni giorno. Se nello stesso giorno c'è un altro sport, vince lui
+    (è quello di cui vogliamo vedere l'effetto); altrimenti corsa, attività leggera o riposo."""
+    a = with_family(acts)
+    kinds = pd.Series("Riposo", index=daily_index)
+    for day, g in a.groupby("day"):
+        if day not in kinds.index:
+            continue
+        sport = g[~g["family"].isin(["Corsa", "Leggero"])]
+        if not sport.empty:
+            kinds[day] = sport.sort_values("training_load", na_position="first")["family"].iloc[-1]
+        elif (g["family"] == "Corsa").any():
+            kinds[day] = "Corsa"
+        else:
+            kinds[day] = "Leggero"
+    return kinds
+
+
+# metrica del risveglio: (etichetta, unità, più alto è meglio?)
+RECOVERY_METRICS = {
+    "hrv_night": ("HRV notturna", "ms", True),
+    "resting_hr": ("FC a riposo", "bpm", False),
+    "sleep_score": ("Sleep score", "punti", True),
+    "bb_high": ("Body Battery al risveglio", "punti", True),
+}
+
+
+def recovery_after(daily: pd.DataFrame, acts: pd.DataFrame, window: int = 28) -> pd.DataFrame:
+    """Per ogni giorno: tipo di giornata e come stai la mattina dopo rispetto al tuo normale.
+    Il normale è la mediana delle 4 settimane fino a quel giorno, così il trend di forma
+    (o l'estate) non viene scambiato per un effetto dello sport."""
+    out = pd.DataFrame(index=daily.index)
+    out["kind"] = day_kinds(daily.index, acts)
+    a = with_family(acts)
+    end_h = a["end"].dt.hour + a["end"].dt.minute / 60
+    out["end_h"] = end_h.groupby(a["day"]).max().reindex(out.index)
+    for m in RECOVERY_METRICS:
+        if m not in daily:
+            continue
+        s = daily[m].astype(float)
+        base = s.rolling(window, min_periods=10).median()
+        out[m] = s.shift(-1) - base
+    return out
+
+
+def compare_groups(values: pd.Series, mask_a: pd.Series, mask_b: pd.Series, min_n: int = 4) -> dict | None:
+    a = values[mask_a.fillna(False)].dropna().to_numpy(float)
+    b = values[mask_b.fillna(False)].dropna().to_numpy(float)
+    if len(a) < min_n or len(b) < min_n:
+        return None
+    diff = a.mean() - b.mean()
+    sd = np.sqrt(((len(a) - 1) * a.var(ddof=1) + (len(b) - 1) * b.var(ddof=1)) / (len(a) + len(b) - 2))
+    return {"a": float(a.mean()), "b": float(b.mean()), "diff": float(diff), "n_a": len(a), "n_b": len(b),
+            "d": float(diff / sd) if sd else 0.0, "p": _perm_test(a, b)}
+
+
+def evidence(res: dict | None) -> str:
+    """Quanto fidarsi di un confronto, in parole."""
+    if not res:
+        return "dati insufficienti"
+    if res["p"] < 0.05 and abs(res["d"]) >= 0.5:
+        return "chiaro"
+    if res["p"] < 0.15 and abs(res["d"]) >= 0.3:
+        return "probabile"
+    return "non distinguibile dal caso"
+
+
+def default_ref_hr(profiles: dict) -> int:
+    """FC di riferimento per l'efficienza: la mediana dei tratti stabili in zona aerobica."""
+    hr = [w[0] for p in profiles.values() if p.get("gps") for w in p["windows"]]
+    aerobic = [h for h in hr if 140 <= h <= 175]
+    return int(5 * round(np.median(aerobic) / 5)) if aerobic else 155
+
+
+def runs_after_sport(per: pd.DataFrame, acts: pd.DataFrame, hours: int = 48) -> pd.DataFrame:
+    """Per ogni corsa con efficienza misurata: c'era un altro sport nelle `hours` ore prima?
+    `resid` = passo a FC di riferimento meno la tendenza delle corse vicine (s/km, negativo = meglio
+    del solito): toglie l'effetto del periodo di forma, che altrimenti dominerebbe il confronto."""
+    if per.empty:
+        return per
+    a = with_family(acts)
+    sport = a[~a["family"].isin(["Corsa", "Leggero"])]
+    p = per.sort_values("date").copy()
+    p["trend"] = p["pace_adj"].rolling(9, center=True, min_periods=4).median()
+    p["resid"] = p["pace_adj"] - p["trend"]
+    before, which = [], []
+    for d in p["date"]:
+        w = sport[(sport["end"] <= d) & (sport["end"] >= d - pd.Timedelta(hours=hours))]
+        before.append(not w.empty)
+        which.append(", ".join(sorted(w["family"].unique())) if not w.empty else "")
+    p["after_sport"] = before
+    p["sport_before"] = which
+    return p
+
+
+def ctl_by_family(acts: pd.DataFrame, start: date, end: date) -> pd.DataFrame:
+    """Forma (CTL) scomposta per sport: la media esponenziale è lineare, quindi la somma
+    delle colonne è esattamente la CTL della pagina Carico e forma."""
+    a = with_family(acts)
+    a = a[(a["day"] >= pd.Timestamp(start)) & (a["day"] <= pd.Timestamp(end))]
+    idx = pd.date_range(start, end, freq="D")
+    if a.empty:
+        return pd.DataFrame(index=idx)
+    a["load"] = a["training_load"].astype(float).fillna(a["duration_min"].astype(float))
+    loads = a.pivot_table(index="day", columns="family", values="load", aggfunc="sum").reindex(idx, fill_value=0)
+    return loads.fillna(0).ewm(alpha=1 / CTL_DAYS, adjust=False).mean()
